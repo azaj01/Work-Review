@@ -814,6 +814,59 @@ fn mentions_local_data_topic(question: &str) -> bool {
     contains_any(&normalized, LOCAL_DATA_TOPIC_SIGNALS)
 }
 
+/// 概念/写作/外部主题问法：只问方法、概念或外部事实，不应读取本机数据。
+///
+/// 同一判定也用于抑制普通聊天分支的本机数据提示，避免概念问题被误加引导话术。
+fn is_concept_writing_or_external_request(normalized: &str) -> bool {
+    contains_any(
+        normalized,
+        &[
+            "模板",
+            "范例",
+            "示例",
+            "什么是",
+            "什麼是",
+            "是什么",
+            "是什麼",
+            "什么意思",
+            "什麼意思",
+            "有什么区别",
+            "有什麼區別",
+            "解释一下",
+            "解釋一下",
+            "怎么实现",
+            "怎麼實現",
+            "如何实现",
+            "如何實現",
+            "怎么写",
+            "怎麼寫",
+            "如何写",
+            "如何寫",
+            "范文",
+            "範文",
+            "怎么排查",
+            "怎麼排查",
+            "如何排查",
+            "通常怎么",
+            "通常怎麼",
+            "通常如何",
+            "方法",
+            "原理",
+            "翻译",
+            "翻譯",
+            "what is",
+            "difference between",
+            "explain",
+            "template",
+            "translate",
+            // 英文「怎么写日报」：how do i / how can i + write 是概念写作问法，
+            // 不是读取自己数据的意图（写自己的日报走 write my / generate）。
+            "how do i write",
+            "how can i write",
+        ],
+    )
+}
+
 /// 对一条完整用户消息判定能力模式，不读取对话历史。
 ///
 /// 规则遵循“明确工作意图优先、模糊通用词不授权本机数据”的边界：
@@ -945,49 +998,7 @@ fn classify_standalone_assistant_request(
     ];
     let has_local_data = contains_any(&normalized, local_data_signals);
     let has_local_data_access = contains_any(&normalized, &local_data_access_signals);
-    let is_template_or_concept_request = contains_any(
-        &normalized,
-        &[
-            "模板",
-            "范例",
-            "示例",
-            "什么是",
-            "什麼是",
-            "是什么",
-            "是什麼",
-            "什么意思",
-            "什麼意思",
-            "有什么区别",
-            "有什麼區別",
-            "解释一下",
-            "解釋一下",
-            "怎么实现",
-            "怎麼實現",
-            "如何实现",
-            "如何實現",
-            "怎么写",
-            "怎麼寫",
-            "如何写",
-            "如何寫",
-            "范文",
-            "範文",
-            "怎么排查",
-            "怎麼排查",
-            "如何排查",
-            "通常怎么",
-            "通常怎麼",
-            "通常如何",
-            "方法",
-            "原理",
-            "翻译",
-            "翻譯",
-            "what is",
-            "difference between",
-            "explain",
-            "template",
-            "translate",
-        ],
-    );
+    let is_template_or_concept_request = is_concept_writing_or_external_request(&normalized);
 
     let strong_product_data_signals = [
         "工作记录",
@@ -2479,7 +2490,8 @@ pub async fn chat_work_assistant(
         request_mode,
         assistant_memory_enabled,
         user_memory_prompt.as_deref(),
-        mentions_local_data_topic(&trimmed_question),
+        mentions_local_data_topic(&trimmed_question)
+            && !is_concept_writing_or_external_request(&trimmed_question.to_lowercase()),
         || build_realtime_context_text(&state_arc),
     );
     let result = crate::agent::tools::with_user_memory_tool_capabilities(
@@ -2571,6 +2583,9 @@ mod tests {
             "最近日报怎么写？",
             "这周工作总结范文",
             "这周的新闻时间线",
+            "How do I write a daily report?",
+            "How do I write a weekly report?",
+            "how can i write a weekly report",
         ] {
             assert_eq!(
                 classify_assistant_request_mode(question, &[]),

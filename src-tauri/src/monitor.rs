@@ -2538,6 +2538,7 @@ mod macos_ax {
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
+        pub fn AXUIElementSetMessagingTimeout(element: AXUIElementRef, timeout: f64) -> AXError;
         pub fn AXUIElementCopyAttributeValue(
             element: AXUIElementRef,
             attribute: CFStringRef,
@@ -2652,6 +2653,11 @@ fn ax_focused_window_info(pid: i32) -> (String, Option<WindowBounds>) {
         if app_element.is_null() {
             return (String::new(), None);
         }
+
+        // 前台应用无响应时，同步 AX 调用默认可阻塞约 6 秒（AXSwift 记录的系统默认），
+        // 会拖住 750ms 头像循环与 1500ms 截图循环。限定单次消息超时为一个头像
+        // 采样周期：超时后返回 kAXErrorCannotComplete，走既有的静默降级路径。
+        let _ = macos_ax::AXUIElementSetMessagingTimeout(app_element, 0.75);
 
         let focused_window_attribute = CFString::from_static_string(macos_ax::ATTR_FOCUSED_WINDOW);
         let window =
