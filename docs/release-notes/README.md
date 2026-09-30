@@ -47,7 +47,7 @@ Release body 形如：
 
 - RC tags use `vMAJOR.MINOR.PATCH-rc.N`, for example `v1.1.3-rc.1`. Leading zeros in numeric components are rejected.
 - Synchronize `package.json`, `package-lock.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `Cargo.lock` before tagging.
-- Add a matching changelog section, including known validation gaps. The 1.1.3 RC notes are written in English directly in `CHANGELOG.md`.
+- Add a matching changelog section, including known validation gaps. RC notes use the same bilingual file mechanism as stable releases (Simplified Chinese body in `CHANGELOG.md`, plus `-en.md` / `-tw.md` files in this directory).
 - Commit and push the prepared changes to `main`. Only after approving publication, create and push the RC tag at the current `origin/main` commit.
 - The existing five-platform build matrix and all release gates also apply to RCs. A release is published only after all build jobs succeed.
 - RC releases set `prerelease: true` and `makeLatest: false`. Stable clients retain their existing `/releases/latest/download/` endpoints; testers install RC assets manually. RC installations also remain on the stable update endpoint.
