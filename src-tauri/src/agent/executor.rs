@@ -441,7 +441,7 @@ impl AgentExecutor {
                     // LLM 想调工具 → 执行
                     if let Some(calls) = &response.tool_calls {
                         // ① 记录 assistant 的工具调用
-                        messages.push(Message::assistant_with_tool_calls(calls));
+                        messages.push(Message::assistant_tool_response(&response));
 
                         // ② 逐个执行工具
                         for tc in calls {

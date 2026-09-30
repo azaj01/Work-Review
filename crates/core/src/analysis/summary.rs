@@ -258,6 +258,22 @@ fn extract_ai_text(response: &serde_json::Value, pointer: &str, provider: &str) 
     Ok(text.trim().to_string())
 }
 
+/// Claude 默认思考时先返回思考块，只拼接正文，不将签名或思考内容写进日报。
+fn extract_claude_text(response: &serde_json::Value) -> Result<String> {
+    let blocks = response["content"].as_array().ok_or_else(|| {
+        AppError::Analysis("Claude malformed response: expected content blocks".to_string())
+    })?;
+    let mut text = String::new();
+    for block in blocks {
+        if block["type"].as_str() == Some("text") {
+            text.push_str(block["text"].as_str().ok_or_else(|| {
+                AppError::Analysis("Claude malformed response: expected text block".to_string())
+            })?);
+        }
+    }
+    Ok(text.trim().to_string())
+}
+
 fn api_response_error(provider: &str, status: StatusCode, error_text: &str) -> AppError {
     let detail = error_text.trim();
     let message = if detail.is_empty() {
@@ -496,7 +512,7 @@ impl SummaryAnalyzer {
 
             if response.status().is_success() {
                 let result: serde_json::Value = response.json().await?;
-                return extract_ai_text(&result, "/content/0/text", "Claude");
+                return extract_claude_text(&result);
             }
 
             let status = response.status();
@@ -1167,7 +1183,7 @@ impl Analyzer for SummaryAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::{
-        api_response_error, empty_ai_fallback_reason, extract_ai_text,
+        api_response_error, empty_ai_fallback_reason, extract_ai_text, extract_claude_text,
         openai_compatible_chat_completion_urls, request_ai_fallback_reason,
         summary_request_timeout, SummaryAnalyzer,
     };
@@ -1178,6 +1194,28 @@ mod tests {
     use std::collections::HashMap;
     use std::path::Path;
     use std::time::Duration;
+
+    #[test]
+    fn claude日报正文应跳过思考并拼接全部文本块() {
+        let response = serde_json::json!({"content": [
+            {"type": "thinking", "thinking": "", "signature": "原始签名"},
+            {"type": "text", "text": " 本日"},
+            {"type": "redacted_thinking", "data": "加密思考"},
+            {"type": "text", "text": "总结 "}
+        ]});
+        assert_eq!(extract_claude_text(&response).unwrap(), "本日总结");
+        assert_eq!(
+            extract_claude_text(&serde_json::json!({"content": [
+                {"type": "thinking", "thinking": "", "signature": "原始签名"}
+            ]}))
+            .unwrap(),
+            ""
+        );
+        assert!(extract_claude_text(&serde_json::json!({"content": [
+            {"type": "text"}
+        ]}))
+        .is_err());
+    }
 
     fn sample_stats_for_ai_structure() -> DailyStats {
         DailyStats {

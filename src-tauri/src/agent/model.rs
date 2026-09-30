@@ -102,6 +102,8 @@ pub struct LlmResponse {
     pub content: Option<String>,
     pub tool_calls: Option<Vec<ToolCall>>,
     pub stop_reason: StopReason,
+    /// Claude 原始内容块：保留思考签名和块顺序，供工具结果回传。
+    pub claude_content_blocks: Option<Vec<Value>>,
 }
 
 /// 统一的消息格式 — Agent 内部只用这个
@@ -117,6 +119,9 @@ pub struct Message {
     /// 工具名称（仅 tool role 消息使用，Gemini 需要）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 仅 Claude 请求使用，不序列化到其他提供商或持久化聊天记录。
+    #[serde(skip)]
+    pub claude_content_blocks: Option<Vec<Value>>,
 }
 
 impl Message {
@@ -127,6 +132,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            claude_content_blocks: None,
         }
     }
 
@@ -137,6 +143,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            claude_content_blocks: None,
         }
     }
 
@@ -160,7 +167,25 @@ impl Message {
             tool_calls: Some(Value::Array(tool_calls_json)),
             tool_call_id: None,
             name: None,
+            claude_content_blocks: None,
         }
+    }
+
+    pub fn assistant_tool_response(response: &LlmResponse) -> Self {
+        let mut message =
+            Self::assistant_with_tool_calls(response.tool_calls.as_deref().unwrap_or_default());
+        message.claude_content_blocks = response.claude_content_blocks.clone();
+        message
+    }
+
+    fn to_provider_value(&self, provider: AiProvider) -> Value {
+        let mut value = serde_json::to_value(self).unwrap_or_default();
+        if provider == AiProvider::Claude {
+            if let Some(blocks) = &self.claude_content_blocks {
+                value["claude_content_blocks"] = json!(blocks);
+            }
+        }
+        value
     }
 
     pub fn tool_result_named(tool_call_id: &str, content: &str, name: Option<&str>) -> Self {
@@ -170,6 +195,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             name: name.map(|n| n.to_string()),
+            claude_content_blocks: None,
         }
     }
 }
@@ -198,7 +224,7 @@ pub async fn chat_with_tools(
         "content": system_prompt
     })];
     for msg in messages {
-        full_messages.push(serde_json::to_value(msg).unwrap_or_default());
+        full_messages.push(msg.to_provider_value(model_config.provider));
     }
 
     // 根据提供商分发
@@ -318,6 +344,10 @@ fn build_claude_request_parts(
         .filter(|m| m["role"].as_str() != Some("system"))
         .map(|m| {
             match m["role"].as_str() {
+                // 原样回传 Claude 内容块，不能重建或丢弃已签名的思考块。
+                Some("assistant") if m["claude_content_blocks"].is_array() => {
+                    json!({"role": "assistant", "content": m["claude_content_blocks"]})
+                }
                 // assistant + tool_calls → Claude content blocks with tool_use
                 Some("assistant") if m["tool_calls"].is_array() => {
                     let mut content_blocks: Vec<Value> = vec![];
@@ -633,11 +663,12 @@ fn parse_openai_response(result: &Value) -> Result<LlmResponse, AppError> {
         content,
         tool_calls,
         stop_reason,
+        claude_content_blocks: None,
     })
 }
 
 /// 解析 Claude 格式的响应
-fn parse_claude_response(result: &Value) -> Result<LlmResponse, AppError> {
+pub(crate) fn parse_claude_response(result: &Value) -> Result<LlmResponse, AppError> {
     let content_blocks = result["content"].as_array();
 
     let mut text_content = String::new();
@@ -688,6 +719,7 @@ fn parse_claude_response(result: &Value) -> Result<LlmResponse, AppError> {
             Some(tool_calls)
         },
         stop_reason,
+        claude_content_blocks: content_blocks.cloned(),
     })
 }
 
@@ -731,6 +763,7 @@ fn parse_gemini_response(result: &Value) -> Result<LlmResponse, AppError> {
             Some(tool_calls)
         },
         stop_reason,
+        claude_content_blocks: None,
     })
 }
 
@@ -768,7 +801,7 @@ pub async fn chat_with_tools_streaming(
         "content": system_prompt
     })];
     for msg in messages {
-        full_messages.push(serde_json::to_value(msg).unwrap_or_default());
+        full_messages.push(msg.to_provider_value(model_config.provider));
     }
 
     let streamed = match model_config.provider {
@@ -1005,6 +1038,7 @@ impl OpenAiStreamAssembler {
             },
             tool_calls,
             stop_reason,
+            claude_content_blocks: None,
         }
     }
 }
@@ -1134,6 +1168,7 @@ impl OllamaStreamAssembler {
                 None
             },
             stop_reason,
+            claude_content_blocks: None,
         }
     }
 }
@@ -1195,6 +1230,8 @@ struct ClaudeStreamAssembler {
     stop_reason: Option<String>,
     /// content block index → (tool_use id, name, partial_json 累积)
     tools: std::collections::BTreeMap<u64, (String, String, String)>,
+    /// 保留全部内容块和原始顺序，思考文本与签名分片独立累积。
+    content_blocks: std::collections::BTreeMap<u64, Value>,
 }
 
 impl ClaudeStreamAssembler {
@@ -1202,8 +1239,9 @@ impl ClaudeStreamAssembler {
         match payload["type"].as_str() {
             Some("content_block_start") => {
                 let block = &payload["content_block"];
+                let index = payload["index"].as_u64().unwrap_or(0);
+                self.content_blocks.insert(index, block.clone());
                 if block["type"].as_str() == Some("tool_use") {
-                    let index = payload["index"].as_u64().unwrap_or(0);
                     self.tools.insert(
                         index,
                         (
@@ -1217,6 +1255,7 @@ impl ClaudeStreamAssembler {
             }
             Some("content_block_delta") => {
                 let delta = &payload["delta"];
+                let index = payload["index"].as_u64().unwrap_or(0);
                 match delta["type"].as_str() {
                     Some("text_delta") => {
                         let text = delta["text"].as_str()?;
@@ -1224,10 +1263,32 @@ impl ClaudeStreamAssembler {
                             return None;
                         }
                         self.text.push_str(text);
+                        if let Some(block) = self.content_blocks.get_mut(&index) {
+                            if let Some(Value::String(full_text)) = block.get_mut("text") {
+                                full_text.push_str(text);
+                            } else {
+                                block["text"] = json!(text);
+                            }
+                        }
                         Some(text.to_string())
                     }
+                    Some("thinking_delta") | Some("signature_delta") => {
+                        let field = if delta["type"] == "thinking_delta" {
+                            "thinking"
+                        } else {
+                            "signature"
+                        };
+                        if let Some(block) = self.content_blocks.get_mut(&index) {
+                            let text = delta[field].as_str().unwrap_or("");
+                            if let Some(Value::String(value)) = block.get_mut(field) {
+                                value.push_str(text);
+                            } else {
+                                block[field] = json!(text);
+                            }
+                        }
+                        None
+                    }
                     Some("input_json_delta") => {
-                        let index = payload["index"].as_u64().unwrap_or(0);
                         if let Some(slot) = self.tools.get_mut(&index) {
                             slot.2
                                 .push_str(delta["partial_json"].as_str().unwrap_or(""));
@@ -1247,21 +1308,34 @@ impl ClaudeStreamAssembler {
         }
     }
 
-    fn finish(self) -> LlmResponse {
+    fn finish(mut self) -> LlmResponse {
+        // 工具参数以 JSON 分片传送；解析完成后补回原始工具块。
+        for (index, (_, _, args)) in &self.tools {
+            if !args.trim().is_empty() {
+                if let Some(block) = self.content_blocks.get_mut(index) {
+                    block["input"] = serde_json::from_str(args).unwrap_or(json!({}));
+                }
+            }
+        }
         let tool_calls: Vec<ToolCall> = self
             .tools
-            .into_values()
-            .filter(|(_, name, _)| !name.is_empty())
-            .map(|(id, name, args)| ToolCall {
+            .into_iter()
+            .filter(|(_, (_, name, _))| !name.is_empty())
+            .map(|(index, (id, name, args))| ToolCall {
                 id,
                 name,
                 arguments: if args.trim().is_empty() {
-                    json!({})
+                    self.content_blocks
+                        .get(&index)
+                        .and_then(|block| block.get("input"))
+                        .cloned()
+                        .unwrap_or(json!({}))
                 } else {
                     serde_json::from_str(&args).unwrap_or(json!({}))
                 },
             })
             .collect();
+        let claude_content_blocks = Some(self.content_blocks.into_values().collect());
         let tool_calls = if tool_calls.is_empty() {
             None
         } else {
@@ -1288,6 +1362,7 @@ impl ClaudeStreamAssembler {
             },
             tool_calls,
             stop_reason,
+            claude_content_blocks,
         }
     }
 }
@@ -1427,6 +1502,7 @@ impl GeminiStreamAssembler {
             },
             tool_calls: if has_tools { Some(tool_calls) } else { None },
             stop_reason,
+            claude_content_blocks: None,
         }
     }
 }
@@ -1786,6 +1862,113 @@ mod tests {
         let resp = asm.finish();
         assert_eq!(resp.stop_reason, StopReason::Stop);
         assert_eq!(resp.content.as_deref(), Some("结论："));
+    }
+
+    #[test]
+    fn claude工具往返应原样保留思考签名和全部内容块() {
+        let blocks = json!([
+            {"type":"thinking","thinking":"","signature":"原始签名"},
+            {"type":"text","text":"先查询"},
+            {"type":"redacted_thinking","data":"加密数据"},
+            {"type":"text","text":"记录"},
+            {"type":"tool_use","id":"toolu_1","name":"aggregate_stats","input":{"date_from":"2026-09-01"}}
+        ]);
+        let response =
+            parse_claude_response(&json!({"content": blocks, "stop_reason":"tool_use"})).unwrap();
+        assert_eq!(response.content.as_deref(), Some("先查询记录"));
+        let message = Message::assistant_tool_response(&response);
+        let tool_result = Message::tool_result_named("toolu_1", "已查询", None);
+        let (messages, _, _) = build_claude_request_parts(
+            &[
+                message.to_provider_value(AiProvider::Claude),
+                tool_result.to_provider_value(AiProvider::Claude),
+            ],
+            &[],
+        );
+        assert_eq!(messages[0]["content"], blocks);
+        assert_eq!(messages[1]["content"][0]["tool_use_id"], "toolu_1");
+        for provider in [AiProvider::OpenAI, AiProvider::Ollama, AiProvider::Gemini] {
+            let value = message.to_provider_value(provider);
+            assert!(value.get("claude_content_blocks").is_none());
+            assert_eq!(value["tool_calls"][0]["id"], "toolu_1");
+        }
+        assert!(serde_json::to_value(&message)
+            .unwrap()
+            .get("claude_content_blocks")
+            .is_none());
+    }
+
+    #[test]
+    fn claude流式工具往返应拼接思考和签名分片并保留块顺序() {
+        let blocks = json!([
+            {"type":"thinking","thinking":"推理内容","signature":"签名完整"},
+            {"type":"text","text":"先查记录"},
+            {"type":"tool_use","id":"toolu_1","name":"aggregate_stats","input":{"date_from":"2026-09-01"}},
+            {"type":"text","text":"再回答"}
+        ]);
+        let mut asm = ClaudeStreamAssembler::default();
+        for (index, block) in blocks.as_array().unwrap().iter().enumerate() {
+            let mut start = block.clone();
+            match block["type"].as_str().unwrap() {
+                "thinking" => {
+                    start["thinking"] = json!("");
+                    start["signature"] = json!("");
+                }
+                "text" => start["text"] = json!(""),
+                "tool_use" => start["input"] = json!({}),
+                _ => {}
+            }
+            asm.ingest(&json!({"type":"content_block_start","index":index,"content_block":start}));
+        }
+        for (kind, field, parts) in [
+            ("thinking_delta", "thinking", ["推理", "内容"]),
+            ("signature_delta", "signature", ["签名", "完整"]),
+        ] {
+            for part in parts {
+                let mut delta = json!({"type":kind});
+                delta[field] = json!(part);
+                assert!(asm
+                    .ingest(&json!({"type":"content_block_delta","index":0,"delta":delta}))
+                    .is_none());
+            }
+        }
+        for (index, text) in [(1, "先查"), (1, "记录"), (3, "再回答")] {
+            assert_eq!(asm.ingest(&json!({"type":"content_block_delta","index":index,"delta":{"type":"text_delta","text":text}})).as_deref(), Some(text));
+        }
+        for part in ["{\"date_from\":", "\"2026-09-01\"}"] {
+            asm.ingest(&json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":part}}));
+        }
+        asm.ingest(&json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}));
+        let response = asm.finish();
+        assert_eq!(response.content.as_deref(), Some("先查记录再回答"));
+        assert_eq!(
+            response.claude_content_blocks.as_ref().unwrap(),
+            blocks.as_array().unwrap()
+        );
+        assert_eq!(
+            response.tool_calls.as_ref().unwrap()[0].arguments,
+            blocks[2]["input"]
+        );
+        let message = Message::assistant_tool_response(&response);
+        let (messages, _, _) =
+            build_claude_request_parts(&[message.to_provider_value(AiProvider::Claude)], &[]);
+        assert_eq!(messages[0]["content"], blocks);
+    }
+
+    #[test]
+    fn claude流式起始块已有工具参数时不应丢失() {
+        let mut asm = ClaudeStreamAssembler::default();
+        asm.ingest(&json!({"type":"content_block_start","index":0,
+            "content_block":{"type":"tool_use","id":"toolu_1","name":"aggregate_stats","input":{"date_from":"2026-09-01"}}}));
+        let response = asm.finish();
+        assert_eq!(
+            response.tool_calls.as_ref().unwrap()[0].arguments["date_from"],
+            "2026-09-01"
+        );
+        assert_eq!(
+            response.claude_content_blocks.unwrap()[0]["input"]["date_from"],
+            "2026-09-01"
+        );
     }
 
     #[test]

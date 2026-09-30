@@ -123,9 +123,24 @@ pub fn apply_ollama(body: &mut Value, config: &ModelConfig) {
 
 pub fn apply_claude(body: &mut Value, config: &ModelConfig, tools_present: bool) {
     let mut max_tokens = resolved_max_tokens(config, 1600);
-    // Claude 开启 thinking 后下一轮必须回传带签名的 thinking 块；
-    // 当前消息结构未保留这些块，因此带工具时不发送 thinking，避免多轮被拒。
-    if !tools_present {
+    let model = config.model.trim().to_ascii_lowercase();
+    let sonnet_5_5 = model == "claude-sonnet-5-5" || model.starts_with("claude-sonnet-5-5-");
+    if sonnet_5_5 {
+        // Sonnet 5.5 默认自适应思考，不接受旧版 enabled / disabled 或 token 预算。
+        // 关闭开关只关闭前置思考；工具间的思考块仍须原样回传。
+        match config.enable_thinking {
+            Some(true) => body["thinking"] = json!({ "type": "adaptive" }),
+            Some(false) => body["thinking"] = json!({ "type": "between_tools" }),
+            None => {}
+        }
+        // 新模型拒绝非默认采样值，交由服务端使用模型默认值。
+        if let Some(object) = body.as_object_mut() {
+            for field in ["temperature", "top_p", "top_k"] {
+                object.remove(field);
+            }
+        }
+    } else if !tools_present {
+        // 保持旧模型的工具请求行为，单轮请求仍使用原有显式思考预算。
         match config.enable_thinking {
             Some(true) => {
                 let budget = config
@@ -236,6 +251,42 @@ mod tests {
         let mut with_tools = json!({});
         apply_claude(&mut with_tools, &config, true);
         assert!(with_tools.get("thinking").is_none());
+    }
+
+    #[test]
+    fn claude_sonnet55应按开关映射自适应与工具间思考() {
+        let mut config = model(AiProvider::Claude);
+        config.model = "claude-sonnet-5-5".to_string();
+        config.max_output_tokens = Some(1000);
+        for tools_present in [false, true] {
+            for (enabled, expected) in [(true, "adaptive"), (false, "between_tools")] {
+                config.enable_thinking = Some(enabled);
+                let mut body = json!({"temperature": 0.2, "top_p": 0.9, "top_k": 20});
+                apply_claude(&mut body, &config, tools_present);
+                assert_eq!(body["thinking"]["type"], expected);
+                assert!(body["thinking"].get("budget_tokens").is_none());
+                assert_eq!(body["max_tokens"], 1000);
+                for field in ["temperature", "top_p", "top_k"] {
+                    assert!(body.get(field).is_none());
+                }
+            }
+        }
+        config.model = "claude-sonnet-5-5-20260928".to_string();
+        config.enable_thinking = None;
+        let mut body = json!({});
+        apply_claude(&mut body, &config, true);
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn claude旧模型仍使用原有思考格式() {
+        let mut config = model(AiProvider::Claude);
+        config.model = "claude-sonnet-4-5".to_string();
+        config.enable_thinking = Some(false);
+        let mut body = json!({"temperature": 0.2});
+        apply_claude(&mut body, &config, false);
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert_eq!(body["temperature"], 0.2);
     }
 
     #[test]

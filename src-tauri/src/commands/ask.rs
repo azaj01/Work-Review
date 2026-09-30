@@ -1717,22 +1717,18 @@ pub(crate) async fn generate_text_answer_with_model(
             } else {
                 format!("{claude_base}/messages")
             };
+            let mut body = serde_json::json!({
+                "model": model_config.model,
+                "system": system_prompt,
+                "messages": [{ "role": "user", "content": prompt }]
+            });
+            work_review_core::generation_params::apply_claude(&mut body, model_config, false);
             let response = client
                 .post(&claude_url)
                 .header("x-api-key", api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("content-type", "application/json")
-                .json(&serde_json::json!({
-                    "model": model_config.model,
-                    "max_tokens": 1600,
-                    "system": system_prompt,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ]
-                }))
+                .json(&body)
                 .send()
                 .await?;
 
@@ -1744,9 +1740,10 @@ pub(crate) async fn generate_text_answer_with_model(
             }
 
             let result: serde_json::Value = response.json().await?;
-            let answer = result["content"][0]["text"]
-                .as_str()
-                .unwrap_or("")
+            // 默认思考模型的首块可能是 thinking，复用按类型读取全部正文块的解析器。
+            let answer = crate::agent::model::parse_claude_response(&result)?
+                .content
+                .unwrap_or_default()
                 .trim()
                 .to_string();
             if answer.is_empty() {
