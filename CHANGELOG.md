@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Refresh default AI model suggestions to current vendor lineups (OpenAI `gpt-6-luna`, Gemini `gemini-3.8-flash`, Claude `claude-sonnet-5-5`, Zhipu `glm-5.3-flash`, Moonshot `kimi-k2.6`, Doubao `doubao-seed-evolving`, MiniMax `MiniMax-M3`, Groq `openai/gpt-oss-120b`, xAI `grok-4.7`). Provider endpoints and default models are now served from `AiProvider` instead of a duplicated list.
+
 ## [1.1.3-rc.1] - 2026-09-05
 
 This is a release candidate for testing, not a stable release. Back up your data before installing, especially before testing data-directory migration. RC releases are not marked as Latest and are not offered through the stable automatic-update endpoint.

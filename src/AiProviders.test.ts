@@ -20,8 +20,8 @@ test('应提供 MiniMax 作为新的 AI 提供商并同步到文档', async () =
 
   assert.match(configSource, /MiniMax/);
   assert.match(configSource, /https:\/\/api\.minimaxi\.com\/v1/);
+  assert.match(configSource, /MiniMax-M3/);
   assert.match(commandSource, /稀宇科技 MiniMax/);
-  assert.match(commandSource, /MiniMax-M2\.5/);
   assert.match(readmeSource, /MiniMax/);
   assert.match(readmeEnSource, /MiniMax/);
 });

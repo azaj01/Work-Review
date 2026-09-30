@@ -126,19 +126,19 @@ impl AiProvider {
     pub fn default_model(&self) -> &'static str {
         match self {
             AiProvider::Ollama => "qwen3",
-            AiProvider::OpenAI => "gpt-5.4",
-            AiProvider::Gemini => "gemini-3-flash",
-            AiProvider::Claude => "claude-sonnet-4-6",
+            AiProvider::OpenAI => "gpt-6-luna",
+            AiProvider::Gemini => "gemini-3.8-flash",
+            AiProvider::Claude => "claude-sonnet-5-5",
             AiProvider::SiliconFlow => "Qwen/Qwen3-8B",
             AiProvider::DeepSeek => "deepseek-chat",
             AiProvider::Qwen => "qwen-flash",
-            AiProvider::Zhipu => "glm-5-turbo",
-            AiProvider::Moonshot => "moonshot-v1-8k",
-            AiProvider::Doubao => "doubao-lite-4k",
-            AiProvider::MiniMax => "MiniMax-M2.5",
+            AiProvider::Zhipu => "glm-5.3-flash",
+            AiProvider::Moonshot => "kimi-k2.6",
+            AiProvider::Doubao => "doubao-seed-evolving",
+            AiProvider::MiniMax => "MiniMax-M3",
             AiProvider::OpenRouter => "openrouter/auto",
-            AiProvider::Groq => "llama-3.3-70b-versatile",
-            AiProvider::XAI => "grok-2-latest",
+            AiProvider::Groq => "openai/gpt-oss-120b",
+            AiProvider::XAI => "grok-4.7",
             AiProvider::Mistral => "mistral-small-latest",
             AiProvider::LmStudio => "local-model",
             AiProvider::Custom => "",
@@ -1376,7 +1376,7 @@ impl Default for AppConfig {
             ollama_host: "http://localhost:11434".to_string(),
             ollama_model: "llava".to_string(),
             openai_api_key: None,
-            openai_model: "gpt-5.4".to_string(),
+            openai_model: "gpt-6-luna".to_string(),
             hide_dock_icon: false,
             lightweight_mode: false,
             break_reminder_enabled: false,
@@ -2803,7 +2803,7 @@ mod tests {
             AiProvider::MiniMax.default_endpoint(),
             "https://api.minimaxi.com/v1"
         );
-        assert_eq!(AiProvider::MiniMax.default_model(), "MiniMax-M2.5");
+        assert_eq!(AiProvider::MiniMax.default_model(), "MiniMax-M3");
     }
 
     #[test]
